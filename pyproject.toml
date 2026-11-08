@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "depthfix"
+version = "0.1.0"
+description = "Deprecation registry scanner and fixer — finds deprecated and outdated project dependencies and rewrites them to supported versions."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["dependencies", "deprecation", "outdated", "security", "npm", "pypi", "go", "cargo"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Security",
+]
+
+# depthfix itself is stdlib-only. TOML scanning works out of the box on
+# Python 3.11+; install the 'toml' extra to get it on older interpreters.
+dependencies = []
+
+[project.optional-dependencies]
+toml = ["tomli>=2 ; python_version < '3.11'"]
+dev = ["pytest"]
+
+[project.scripts]
+depthfix = "depthfix.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["depthfix*"]
+
+[tool.setuptools.package-data]
+depthfix = ["registries/*.json"]
