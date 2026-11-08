@@ -1,8 +1,8 @@
 # depthfix
 
-**Deprecation registry scanner and fixer** — scans your project's dependency
-manifests for deprecated / end-of-life / outdated packages and rewrites them to
-supported versions (with the successor package where one exists).
+**Deprecation registry scanner and fixer**: scans your project's dependencies
+deprecated / end-of-life / outdated packages and rewrites them to
+supported versions (if it exists).
 
 ## What it does
 
