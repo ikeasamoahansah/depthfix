@@ -38,6 +38,7 @@ class Dependency:
     section: str = ""    # manifest section, e.g. "dependencies" / "[project]"
     name_edit: Optional[Edit] = None  # span of the bare name in the file
     spec_edit: Optional[Edit] = None  # span of the bare spec in the file
+    exotic: bool = False  # URL/VCS/path/alias source, never rewritten
 
 
 @dataclass

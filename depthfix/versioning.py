@@ -103,6 +103,47 @@ def floor_version(spec: Optional[str]) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def split_marker(spec: Optional[str]) -> Tuple[str, str]:
+    """Split a PEP 508 spec into (version-spec, marker).
+
+    '>=2 ; python_version < "3.8"' -> ('>=2', 'python_version < "3.8"').
+    """
+    if not spec:
+        return "", ""
+    spec = spec.strip()
+    if ";" in spec:
+        ver, marker = spec.split(";", 1)
+        return ver.strip(), marker.strip()
+    return spec, ""
+
+
+def _is_exotic_text(spec: str) -> bool:
+    """URL / VCS / filesystem refs shared by the npm and pypi ecosystem."""
+    return bool(re.match(
+        r"^(?:git[+@]|git+ssh|github:|gitlab:|bitbucket:|https?://|file:|/|~/|\.{1,2}/)",
+        spec)) or " @" in spec
+
+
+def is_exotic_spec(eco: str, spec: Optional[str]) -> bool:
+    """True for specifiers that cannot be rewritten safely.
+
+    Covers npm URL/git/alias/workspace specs and pypi direct references
+    (PEP 508 'name @ url'). Cargo git/path entries are flagged by the
+    scanner, since the spec alone does not show them.
+    """
+    if not spec:
+        return False
+    s = spec.strip()
+    if eco == "npm":
+        return bool(re.match(
+            r"^(?:npm:|registry:|file:|link:|workspace:|https?://|git[+@]|"
+            r"github:|gitlab:|bitbucket:|/|~/|\.{1,2}/)", s)) or \
+            bool(re.match(r"^[\w.~\-/]+\.(?:tgz|tar|zip)$", s))
+    if eco == "pypi":
+        return _is_exotic_text(s) or "@" in s
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Spec matching
 # ---------------------------------------------------------------------------
@@ -243,13 +284,17 @@ def best_match(candidates: Iterable[str], spec: Optional[str],
 def bump_spec(eco: str, spec: Optional[str], latest: str) -> str:
     """Build a new spec for the same package, preserving its operator style."""
     latest = latest.strip()
+    spec = (spec or "").strip()
     if eco == "go":
         return latest if latest.startswith("v") else "v" + latest
     if eco == "pypi":
-        m = re.match(r"^(===|~=|>=|<=|==|>|<)", (spec or "").strip())
-        return (m.group(1) if m else "==") + latest
+        # PEP 508: preserve the environment marker across the bump
+        spec, marker = split_marker(spec)
+        m = re.match(r"^(===|~=|>=|<=|==|>|<)", spec)
+        return (m.group(1) if m else "==") + latest + \
+            ((" ; " + marker) if marker else "")
     # npm / cargo
-    m = re.match(r"^(\^|~|>=|=|=~)", (spec or "").strip())
+    m = re.match(r"^(\^|~|>=|=|=~)", spec)
     prefix = m.group(1) if m else "^"
     return prefix + latest
 
@@ -260,7 +305,9 @@ def replacement_spec(eco: str, old_spec: Optional[str], latest: str) -> str:
     if eco == "go":
         return latest if latest.startswith("v") else "v" + latest
     if eco == "pypi":
-        m = re.match(r"^(===|~=|>=|==)(\s*)", (old_spec or "").strip())
+        # PEP 508: keep the environment marker of the removed entry
+        ver, marker = split_marker(old_spec)
+        m = re.match(r"^(===|~=|>=|==)", ver)
         op = m.group(1) if m else "=="
-        return op + latest
+        return op + latest + ((" ; " + marker) if marker else "")
     return "^" + latest

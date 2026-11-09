@@ -12,18 +12,19 @@ depthfix 0.1.0 — deprecation registry & fixer
 scanning: /home/you/project  [check]
 
 /home/you/project/package.json
-  DEPRECATED  node-sass ^7.0.3  [dependencies] (line 5)
+  DEPRECATED   node-sass ^7.0.3  [dependencies] (line 4)
       LibSass and node-sass are deprecated; the maintainer recommends Dart Sass.  (EOL 2024-04-30)
-      fix:  node-sass → sass, '^7.0.3' → '^1.108.1'  [applied]
-  DEPRECATED  request 2.88.2  [dependencies] (line 6)
+      fix:  node-sass → sass, '^7.0.3' → '^1.108.1'  [planned]
+  DEPRECATED   request ^2.88.2  [dependencies] (line 5)
       request is fully deprecated; no new versions will be published.  (EOL 2020-02-11)
       advisory only, no automatic migration — consider: got, axios, native fetch
 
-summary: 2 deprecated · 0 outdated · 1 fixed · 1 need attention
+summary: 2 deprecated · 0 outdated · 0 filed/applied · 1 planned · 1 need attention
 ```
 
 * **Find**: reads manifests, resolves each dependency against a *deprecation
-  registry* (bundled static registry first, live registry APIs second).
+  registry* (bundled static registry first, live registry APIs second) and,
+  for installed versions, against the project's lockfile.
 * **Fix**: rewrites manifests in place, preserving formatting — punctuation,
   comments, key order and style all survive. Where a deprecated package has a
   designated successor (`node-sass → sass`, `pycrypto → pycryptodome`,
@@ -39,13 +40,13 @@ summary: 2 deprecated · 0 outdated · 1 fixed · 1 need attention
 
 ## Supported manifests
 
-| Manifest                               | Ecosystem | Fixes                                                                    |
-|----------------------------------------|-----------|--------------------------------------------------------------------------|
-| `package.json`                         | npm       | swaps + version bumps, per-version npm `deprecated` flags                |
-| `requirements*.txt`, `constraints*.txt`| pypi      | swaps + bumps of pinned/comparator specs                                 |
-| `pyproject.toml` (PEP 621 + poetry)    | pypi      | swaps + bumps of pinned/comparator specs                                 |
-| `go.mod` (require blocks, indirect)    | go        | module swaps (major-version paths) + version bumps                       |
-| `Cargo.toml` (all dependency tables)   | cargo     | swaps + bumps; exact installed version read from `Cargo.lock` when present |
+| Manifest                                | Ecosystem | Lockfile consulted                         | Fixes                                                                    |
+|-----------------------------------------|-----------|--------------------------------------------|--------------------------------------------------------------------------|
+| `package.json` (+ `*lock*`)             | npm       | `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml` | swaps + version bumps, per-version npm `deprecated` flags, pinning       |
+| `requirements*.txt`, `constraints*.txt` | pypi      | —                                          | swaps + bumps of pinned/comparator specs, pinning of unpinned specs      |
+| `pyproject.toml` (PEP 621 + poetry)     | pypi      | —                                          | swaps + bumps of pinned/comparator specs (env markers preserved)         |
+| `go.mod` (require blocks, indirect)     | go        | —                                          | module swaps (major-version paths) + version bumps                       |
+| `Cargo.toml` (all dependency tables)    | cargo     | `Cargo.lock`                               | swaps + bumps; exact installed version read from `Cargo.lock` when present |
 
 ## Install & usage
 
@@ -66,9 +67,13 @@ $ depthfix --refresh       # force refetch of registry data
 $ depthfix --registry mine.json   # add/override registry entries
 $ depthfix --json          # machine-readable report
 ```
-
 Exit codes: `0` clean/everything auto-fixable done, `1` findings or manual
 attention remain, `2` operational error. `--check` is CI-safe.
+
+Every mode is terminal-first: colourized compiler-style output (auto-disabled
+without a TTY / `NO_COLOR`), `--json` for piping, and a proper exit code so it
+chains in scripts. When installed with `pip install .` (or `pipx`) the
+`depthfix` console command covers scanning any tree from anywhere.
 
 ## The hybrid registry
 
@@ -103,11 +108,12 @@ explicit:
 ## Development
 
 ```console
-$ python3 -m unittest discover -s tests   # 25 tests, stdlib only
+$ python3 -m unittest discover -s tests   # 47 tests, stdlib only
 $ python3 -m depthfix --dry-run .          # run from a checkout
 ```
 
 Layout: `depthfix/versioning.py` (dependency-free semver/PEP 440 matcher),
+`depthfix/lockfiles.py` (npm/pnpm/yarn lockfile parsing),
 `depthfix/scanners/` (per-manifest parsers → spans), `depthfix/analysis.py`
 (registry + upstream → findings & fix plans), `depthfix/fixer.py` (span
 splicing), `depthfix/installers.py` (package-manager execution),
@@ -116,12 +122,17 @@ splicing), `depthfix/installers.py` (package-manager execution),
 
 ## Known limitations
 
-* "Outdated" compares the spec floor (or lockfile, for Cargo) with the latest
-  upstream release — it does not parse lockfiles for npm/pnpm/yarn yet.
-* Unpinned dependencies (no version spec) are reported only when the registry
-  itself flags them; there is nothing to rewrite.
-* Exotic specifiers (URLs, VCS refs, git branch specs in npm, local paths) are
-  skipped rather than guessed at.
+* Lockfiles are read as *flat* package → version maps; vendored/nested
+  duplicates are resolved to the shallowest entry, and pnpm `importers:`
+  projects with per-importer overrides are not distinguished per-importer.
+* Python ecosystems have no equivalent installed-state source yet: pypi
+  resolution uses the spec (`uv.lock` / `poetry.lock` are not parsed), so
+  unpinned pypi entries are only reported when the registry itself flags them.
+* Exotic specifiers (URL, VCS refs, git branch specs, local paths, aliases)
+  are surfaced with an explicit advisory note instead of being silently
+  skipped, but they are never rewritten — migrating them stays manual.
+* Deep `package-lock.json` `dependencies` trees resolved only for versions;
+  peer/host branch matching (resolution variants) is summarised, not modelled.
 
 ## License
 

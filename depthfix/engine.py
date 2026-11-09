@@ -85,10 +85,17 @@ def run(roots: List[Path], opts: Options) -> Result:
     lock_cache: dict = {}
     for dep in deps:
         lock = None
-        if dep.ecosystem == "cargo":
-            if dep.file not in lock_cache:
-                lock_cache[dep.file] = analysis.cargo_lock_versions(dep.file)
-            lock = lock_cache[dep.file]
+        if dep.ecosystem in (models.CARGO, models.NPM):
+            try:
+                if dep.file not in lock_cache:
+                    lock_cache[dep.file] = analysis.lock_versions(dep.file)
+                lock = lock_cache[dep.file]
+            except Exception as exc:  # noqa: BLE001
+                result.warnings.append(
+                    f"{dep.file}: lockfile unreadable ({exc}); "
+                    "resolving from specs instead")
+                lock_cache[dep.file] = {}
+                lock = None
         try:
             finding = analysis.evaluate(dep, registry, upstream, lock)
         except Exception as exc:  # noqa: BLE001
@@ -101,6 +108,14 @@ def run(roots: List[Path], opts: Options) -> Result:
 
     result.findings = [f for f in findings
                        if f.status in (STATUS_DEPRECATED, STATUS_OUTDATED)]
+
+    # exotic dependencies that no finding surfaced still deserve a note
+    flagged = {(f.dep.file, f.dep.line) for f in result.findings}
+    for d in deps:
+        if d.exotic and (d.file, d.line) not in flagged:
+            result.warnings.append(
+                f"{d.file}:{d.line}: {d.name}: exotic specifier "
+                f"({d.spec or '<none>'}) — skipped, never rewritten")
 
     write_mode = not (opts.dry_run or opts.check)
     changed = fixer.apply_fixes(result.findings, dry_run=not write_mode)

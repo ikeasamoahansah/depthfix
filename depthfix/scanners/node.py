@@ -9,13 +9,17 @@ from typing import List, Optional, Tuple
 
 from .. import models
 from ..models import Dependency
+from ..versioning import is_exotic_spec
 
 SECTIONS = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
 
 
 def scan_file(path: Path) -> List[Dependency]:
     text = path.read_text(encoding="utf-8", errors="replace")
-    data = json.loads(text)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid JSON in {path.name}: {exc}") from exc
     out: List[Dependency] = []
     for section in SECTIONS:
         deps = data.get(section) or {}
@@ -36,6 +40,7 @@ def scan_file(path: Path) -> List[Dependency]:
                 section=section,
                 name_edit=located and located[0],
                 spec_edit=located and located[1],
+                exotic=bool(spec) and is_exotic_spec(models.NPM, spec),
             ))
     return out
 

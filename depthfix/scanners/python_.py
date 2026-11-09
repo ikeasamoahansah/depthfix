@@ -24,8 +24,10 @@ _REQ_LINE = re.compile(
     rf"^(?P<indent>\s*)(?P<name>{_NAME})(?P<extra>\[[^\]]*\])?(?P<pre>\s*)"
     r"(?P<spec>(?:===|~=|!=|>=|<=|==|>|<)\s*[\w.\-*,]*|)(?P<rest>.*)$"
 )
+# PEP 508 entries inside pyproject strings: 'name[extra]==1.2.3 ; marker'
+# plus direct references 'name @ https://...'
 _DEP_STR = re.compile(
-    rf"^(?P<name>{_NAME})(?P<extra>\[[^\]]*\])?\s*(?P<spec>[=<>!~].*|)$"
+    rf"^(?P<name>{_NAME})(?P<extra>\[[^\]]*\])?\s*(?P<spec>[@=<>!~].*|)$"
 )
 _QUOTED = re.compile(r'"([^"\\\n]+)"')
 
@@ -53,14 +55,25 @@ def scan_requirements(path: Path) -> List[Dependency]:
         m = _REQ_LINE.match(raw)
         if m:
             name = m.group("name")
-            spec = m.group("spec") or None
+            rest = m.group("rest")
+            extra = m.group("extra") or ""
+            # direct reference 'pkg @ https://host/pkg-1.0.tar.gz' after the
+            # name: never rewritten, advisory only
+            exotic = bool(re.match(r"^\s*@\s*\S+", rest))
+            spec: Optional[str] = ("@ " + rest.strip()[1:].strip()) if exotic \
+                else (m.group("spec") or None)
             base = pos + len(m.group("indent"))
             name_edit = models.Edit(base, base + len(name), name)
             spec_edit = None
-            if spec:
+            if not exotic and spec:
                 s_start = m.start("spec")
                 # absolute offset: m.start() is relative to `raw`
                 spec_edit = models.Edit(pos + s_start, pos + m.end("spec"), spec)
+            elif not exotic:
+                # unpinned dependency: anchor a zero-width insertion right
+                # after the name (and any extras) so it can be pinned
+                point = base + len(name) + len(extra)
+                spec_edit = models.Edit(point, point, "")
             out.append(Dependency(
                 ecosystem=models.PYPI,
                 name=_norm(name),
@@ -70,6 +83,7 @@ def scan_requirements(path: Path) -> List[Dependency]:
                 section=path.name,
                 name_edit=name_edit,
                 spec_edit=spec_edit,
+                exotic=exotic,
             ))
         pos += len(raw)
     return out
@@ -87,7 +101,7 @@ def scan_pyproject(path: Path) -> List[Dependency]:
     text = path.read_text(encoding="utf-8", errors="replace")
     data = _toml.loads(text)
 
-    wanted: List[Tuple[str, Optional[str], str]] = []  # (name, spec, section)
+    wanted: List[Tuple[str, Optional[str], str, bool]] = []  # (name, spec, section, exotic)
 
     project = data.get("project") or {}
     for spec in project.get("dependencies") or []:
@@ -102,14 +116,19 @@ def scan_pyproject(path: Path) -> List[Dependency]:
     for name, value in poetry.items():
         if name.lower() == "python":
             continue
-        spec = value if isinstance(value, str) else (value or {}).get("version")
-        wanted.append((name, spec, "[tool.poetry.dependencies]"))
+        if isinstance(value, str):
+            wanted.append((name, value or None, "[tool.poetry.dependencies]", False))
+        else:
+            info = value or {}
+            if info.get("version"):
+                wanted.append((name, info["version"], "[tool.poetry.dependencies]", False))
+            elif any(k in info for k in ("git", "path", "url", "source")):
+                # VCS / filesystem / alternative-index sources: advisory only
+                wanted.append((name, None, "[tool.poetry.dependencies]", True))
 
-    # poetry-style extras: poetry.extras table values are names only
-    extras = ((data.get("tool") or {}).get("poetry") or {}).get("extras") or {}
     used: set = set()
     out: List[Dependency] = []
-    for name, spec, section in wanted:
+    for name, spec, section, is_exotic in wanted:
         located = _locate_quoted(text, name, spec, used)
         if not located:
             located = _locate_table(text, name, spec, used)
@@ -123,8 +142,8 @@ def scan_pyproject(path: Path) -> List[Dependency]:
             section=section,
             name_edit=located and located[0],
             spec_edit=located and located[1],
+            exotic=is_exotic,
         ))
-    del extras
     return out
 
 
@@ -133,7 +152,7 @@ def _add_req_entry(wanted, entry: str, section: str) -> None:
         return
     m = _DEP_STR.match(entry.strip())
     if m:
-        wanted.append((m.group("name"), m.group("spec") or None, section))
+        wanted.append((m.group("name"), m.group("spec") or None, section, False))
 
 
 def _locate_quoted(text: str, name: str, spec: Optional[str], used: set):
@@ -158,8 +177,18 @@ def _locate_quoted(text: str, name: str, spec: Optional[str], used: set):
         if spec_in:
             s_off = content.find(spec_in, n_start - base)
             spec_edit = models.Edit(base + s_off, base + s_off + len(spec_in), spec_in)
+        elif not content_is_direct_ref(content):
+            # unpinned entry like "requests": anchor a zero-width insertion
+            # right after the name/extras so a fix can pin it
+            extra_len = len(parsed.group("extra") or "")
+            point = n_start + len(parsed.group("name")) + extra_len
+            spec_edit = models.Edit(point, point, "")
         return name_edit, spec_edit, m.start()
     return None
+
+
+def content_is_direct_ref(content: str) -> bool:
+    return bool(re.match(r"^\s*\w[\w._\-]*\[[^\]]*\]?\s*@\s*\S+", content))
 
 
 def _locate_table(text: str, name: str, spec: Optional[str], used: set):

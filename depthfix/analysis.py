@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import models, versioning
+from . import lockfiles, models, versioning
 from .models import Dependency, Finding
 from .registry import Registry
 from .upstream import Upstream
@@ -75,11 +75,18 @@ def _plan_fix(finding: Finding, entry, latest, replacement_latest) -> None:
     dep = finding.dep
     eco = dep.ecosystem
 
+    if dep.exotic or versioning.is_exotic_spec(eco, dep.spec):
+        finding.note = (
+            f"exotic specifier ({dep.spec or '<none>'}) — downloads from a URL, "
+            "VCS or local path; rewrite postponed, migrate manually")
+        return
+
     if finding.replacement:
         if replacement_latest:
             finding.new_name = finding.replacement
-            if dep.spec:
-                finding.new_spec = versioning.replacement_spec(eco, dep.spec, replacement_latest)
+            if dep.spec or dep.spec_edit:
+                finding.new_spec = versioning.replacement_spec(
+                    eco, dep.spec, replacement_latest)
             finding.latest = replacement_latest
         else:
             finding.note = (
@@ -104,8 +111,13 @@ def _plan_fix(finding: Finding, entry, latest, replacement_latest) -> None:
 
     if latest:
         if dep.spec is None:
-            finding.note = ("unpinned dependency; nothing to rewrite — "
-                            "pin a version to let depthfix manage upgrades")
+            # unpinned dependency: pin it (zero-width insert) when the
+            # manifest has an anchor point for the new spec
+            if dep.spec_edit is not None:
+                finding.new_spec = versioning.bump_spec(eco, None, latest)
+            else:
+                finding.note = ("unpinned dependency; nothing to rewrite — "
+                                "pin a version to let depthfix manage upgrades")
         else:
             if dep.resolved and versioning.compare(latest, dep.resolved) <= 0 and \
                     finding.status == models.STATUS_DEPRECATED:
@@ -123,19 +135,37 @@ def _plan_fix(finding: Finding, entry, latest, replacement_latest) -> None:
 def _resolved(eco: str, dep: Dependency, upstream: Upstream,
               lock: Optional[Dict[str, str]]) -> Optional[str]:
     if eco == models.NPM:
+        locked = (lock or {}).get(dep.name)
+        if locked and (not dep.spec or
+                       versioning.satisfies(dep.spec, locked, models.NPM)):
+            return locked
         versions = upstream.npm_versions(dep.name)
         resolved = versioning.best_match(versions, dep.spec, models.NPM)
-        return resolved or versioning.floor_version(dep.spec)
+        return resolved or locked or versioning.floor_version(dep.spec)
     if eco == models.CARGO and lock:
         locked = lock.get(dep.name)
         if locked:
             return locked
     if dep.spec:
         sm = re.match(r"^\s*(===|~=|==|>=|v)\s*([0-9][\w.\-+]*)", dep.spec)
-        return sm.group(2) if sm else versioning.floor_version(dep.spec)
-    if lock and eco == models.CARGO:
-        return lock.get(dep.name)
+        return (sm.group(2) if sm else None) or versioning.floor_version(dep.spec)
     return None
+
+
+def lock_versions(manifest: Path, eco: Optional[str] = None) -> Dict[str, str]:
+    """Parse the lockfile(s) next to `manifest` for installed versions.
+
+    Cargo manifests consult Cargo.lock; npm manifests consult
+    package-lock.json / npm-shrinkwrap.json / yarn.lock / pnpm-lock.yaml.
+    """
+    eco = eco or (
+        models.CARGO if manifest.name == "Cargo.toml"
+        else models.NPM if manifest.name == "package.json" else None)
+    if eco == models.CARGO:
+        return cargo_lock_versions(manifest)
+    if eco == models.NPM:
+        return lockfiles.load(manifest.parent)
+    return {}
 
 
 def cargo_lock_versions(cargo_toml: Path) -> Dict[str, str]:

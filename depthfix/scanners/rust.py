@@ -49,6 +49,7 @@ def scan_file(path: Path) -> List[Dependency]:
 
 def _entry(path: Path, text: str, pos: int, line_no: int, line: str,
            section: str) -> Optional[Dependency]:
+    exotic = bool(re.search(r"(?:^|[{,])\s*(?:git|path|branch|rev|tag|source)\s*=", line))
     simple = re.match(r"^\s*(?P<name>[A-Za-z0-9_\-.]+)\s*=\s*\"(?P<spec>[^\"]*)\"", line)
     if simple:
         name, spec = simple.group("name"), simple.group("spec")
@@ -57,8 +58,15 @@ def _entry(path: Path, text: str, pos: int, line_no: int, line: str,
             r"^\s*(?P<name>[A-Za-z0-9_\-.]+)\s*=\s*\{[^}]*?version\s*=\s*\"(?P<spec>[^\"]*)\"",
             line)
         if not m:
-            return None
-        name, spec = m.group("name"), m.group("spec")
+            name, spec = None, None
+            table = re.match(r"^\s*(?P<name>[A-Za-z0-9_\-.]+)\s*=\s*\{", line)
+            if table:
+                name, spec = table.group("name"), None
+            if not name:
+                return None
+            exotic = True                      # no version -> git/path/source
+        else:
+            name, spec = m.group("name"), m.group("spec")
 
     name_start = pos + line.find(name)
     return Dependency(
@@ -71,4 +79,5 @@ def _entry(path: Path, text: str, pos: int, line_no: int, line: str,
         name_edit=models.Edit(name_start, name_start + len(name), name),
         spec_edit=models.Edit(pos + line.find(spec), pos + line.find(spec) + len(spec),
                               spec) if spec else None,
+        exotic=exotic,
     )
